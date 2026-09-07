@@ -1,38 +1,24 @@
-# Python
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-.Python
-*.so
-*.egg
-*.egg-info/
-dist/
-build/
-*.whl
-
-# 가상 환경
+# Python virtual environments
 venv/
 .venv/
-ENV/
 env/
+.env
 
-# IDE
+# Python bytecode / cache files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# IDE and Editor settings
 .vscode/
 .idea/
 *.swp
 *.swo
 
-# OS
+# OS generated files
 .DS_Store
 Thumbs.db
-desktop.ini
 
-# 로그
+# Logs and databases
 *.log
-*.pid
-
-# 환경 변수
-.env
-.env.local
-.env.*.local
+*.sqlite3
